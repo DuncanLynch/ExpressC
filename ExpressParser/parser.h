@@ -1,3 +1,5 @@
+#ifndef PARSER_H
+#define PARSER_H
 #include "../ExpressTypes/ExpressHttp.h"
 #include "../ExpressTypes/error.h"
 
@@ -12,8 +14,9 @@ ExpressStatus parse_headers(const char *raw_request, size_t length,
 ExpressStatus parse_request_line(const char *req_line, const size_t length,
                                  HttpRequest *req);
 ExpressStatus parse_body(const char *req_body, size_t length, HttpRequest *req);
-ExpressStatus parse_http_request(const char *raw_request, size_t length,
+ExpressStatus parse_http_request(char *raw_request, size_t length,
                                  ExpressRequest *expr_req);
 ExpressStatus parse_http_response(const char *raw_response, size_t length,
                                   ExpressResponse *expr_res);
 ExpressStatus parse_response_line(const char *raw_response, HttpResponse *res);
+#endif

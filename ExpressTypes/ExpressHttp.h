@@ -1,27 +1,36 @@
-#include <stddef.h>
 #ifndef EXPRESS_HTTP_H
 #define EXPRESS_HTTP_H
 
+#include <stddef.h>
 #define MAX_BUFFER_SIZE 8192
 
-typedef struct Header {
+typedef struct ExpressHeader ExpressHeader;
+
+struct ExpressHeader {
   char *key;
   char *value;
-} Header;
+  ExpressHeader *next;
+};
+
+typedef struct Params {
+  char *key;
+  char *value;
+  struct Params *next;
+} Params;
 
 typedef struct HttpRequest {
   char *method;
   char *url;
   char *httpVersion;
-  Header *headers;
+  ExpressHeader *headers;
+  Params *params;
   char *body;
 } HttpRequest;
 
 typedef struct HttpResponse {
   int statusCode;
   char *statusMessage;
-  Header *headers;
-  size_t headerlCount;
+  ExpressHeader *headers;
   char *body;
   size_t bodyLength;
 } HttpResponse;
@@ -33,7 +42,7 @@ typedef struct ExpressResponse {
   int statusCode;
   char *statusMessage;
   char *url;
-  Header *headers;
+  ExpressHeader *headers;
   size_t headerCount;
   char *body;
   size_t bodyLength;
@@ -43,7 +52,7 @@ typedef struct ExpressResponse {
 typedef struct ExpressRequest {
   char *url;
   Method method;
-  Header *headers;
+  ExpressHeader *headers;
   size_t headerCount;
   char *body;
   size_t bodyLength;
