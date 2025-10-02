@@ -16,3 +16,5 @@ example, the ExpressParser errors are in the range of |10-19|.
 #define EXPRESS_PARSE_REQUEST_ERROR -10
 #define EXPRESS_PARSE_RESPONSE_ERROR -11
 #define EXPRESS_PARSE_INVALID_HTTP -12
+
+#define EXPRESS_PARSE_NOPARAMS 10

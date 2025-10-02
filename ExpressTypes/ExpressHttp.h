@@ -23,7 +23,6 @@ typedef struct HttpRequest {
   char *url;
   char *httpVersion;
   ExpressHeader *headers;
-  Params *params;
   char *body;
 } HttpRequest;
 
@@ -43,18 +42,18 @@ typedef struct ExpressResponse {
   char *statusMessage;
   char *url;
   ExpressHeader *headers;
-  size_t headerCount;
   char *body;
   size_t bodyLength;
   unsigned int timeout_ms;
 } ExpressResponse;
 
 typedef struct ExpressRequest {
-  char *url;
+  char* url;
   Method method;
+  char* httpVersion;
   ExpressHeader *headers;
-  size_t headerCount;
-  char *body;
+  Params* param;
+  char* body;
   size_t bodyLength;
   unsigned int timeout_ms;
 } ExpressRequest;

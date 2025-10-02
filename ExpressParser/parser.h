@@ -19,4 +19,8 @@ ExpressStatus parse_http_request(char *raw_request, size_t length,
 ExpressStatus parse_http_response(const char *raw_response, size_t length,
                                   ExpressResponse *expr_res);
 ExpressStatus parse_response_line(const char *raw_response, HttpResponse *res);
+ExpressStatus parse_request_params(const char* url, const size_t len, ExpressRequest* req);
+
+ExpressStatus print_req(ExpressRequest* req);
+ExpressStatus print_res(ExpressResponse* res);
 #endif
