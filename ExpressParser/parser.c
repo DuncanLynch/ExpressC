@@ -27,16 +27,41 @@ ExpressStatus parse_http_request(char *raw_request, size_t length,
   if (body_status != EXPRESS_OK) {
     PARSE_FAIL(req, body_status);
   }
-
-  printf("Method: %s\nUrl: %s\nVersion: %s\n", req->method, req->url,
-         req->httpVersion);
-  ExpressHeader *current_header = req->headers;
-  while (current_header && current_header->key) {
-    printf("Header:\nKey: %s, Value: %s\n", current_header->key,
-           current_header->value);
-    current_header = current_header->next;
+  expr_req->url = req->url;
+  switch (req->method[0]) {
+  case 'G':
+    expr_req->method = GET;
+    break;
+  case 'P':
+    if (req->method[1] == 'O')
+      expr_req->method = POST;
+    else if (req->method[1] == 'U')
+      expr_req->method = PUT;
+    else if (req->method[1] == 'A')
+      expr_req->method = PATCH; 
+    else
+      PARSE_FAIL(req, EXPRESS_PARSE_REQUEST_ERROR); 
+    break;
+  case 'D':
+    expr_req->method = DELETE;
+    break;
+  case 'O':
+    expr_req->method = OPTIONS;
+    break;
+  case 'H':
+    expr_req->method = HEAD;
+    break;
+  default:  
+    PARSE_FAIL(req, EXPRESS_PARSE_REQUEST_ERROR);
   }
-
+  expr_req->httpVersion = req->httpVersion;
+  expr_req->headers = req->headers;
+  expr_req->body = req->body;
+  expr_req->bodyLength = strlen(req->body);
+  expr_req->timeout_ms = 0;
+  expr_req->param = NULL;
+  parse_request_params(expr_req->url, strlen(expr_req->url), expr_req);
+  free(req);
   return EXPRESS_OK;
 }
 
@@ -93,5 +118,53 @@ ExpressStatus parse_headers(const char *headers, const size_t length,
 
 ExpressStatus parse_body(const char *body, size_t length, HttpRequest *req) {
   req->body = strndup(body, length);
+  return EXPRESS_OK;
+}
+
+ExpressStatus parse_request_params(const char* url, const size_t len, ExpressRequest* req){
+  const char* paramloc = strchr(url, '?');
+  if (paramloc == NULL) return EXPRESS_PARSE_NOPARAMS;
+  char* params = strdup(paramloc + 1);
+  char* line = strtok(params, "&");
+  Params* current_param = NULL;
+  while (line) {
+    char* equal = strchr(line, '=');
+    if (equal) {
+      Params* new_param = malloc(sizeof(Params));
+      *equal = '\0';
+      new_param->key = strdup(line);
+      new_param->value = strdup(equal + 1);
+      new_param->next = NULL;
+      if (!req->param) {
+        req->param = new_param;
+        current_param = req->param;
+      } else {
+        current_param->next = new_param;
+        current_param = new_param;
+      }
+    }
+    line = strtok(NULL, "&");
+  }
+  free(params);
+  return EXPRESS_OK;
+} 
+
+ExpressStatus print_req(ExpressRequest* req){
+  printf("Method: %d\n", req->method);
+  printf("URL: %s\n", req->url);
+  printf("HTTP Version: %s\n", req->httpVersion);
+  printf("Headers:\n");
+  ExpressHeader* header = req->headers;
+  while (header) {
+    printf("  %s: %s\n", header->key, header->value);
+    header = header->next;
+  }
+  printf("Params:\n");
+  Params* param = req->param;
+  while (param) {
+    printf("  %s: %s\n", param->key, param->value);
+    param = param->next;
+  }
+  printf("Body: %s\n", req->body);
   return EXPRESS_OK;
 }
