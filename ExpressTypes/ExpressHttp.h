@@ -2,6 +2,8 @@
 #define EXPRESS_HTTP_H
 
 #include <stddef.h>
+#include <sys/types.h>
+
 #define MAX_BUFFER_SIZE 8192
 
 typedef struct ExpressHeader ExpressHeader;
@@ -36,6 +38,7 @@ typedef struct HttpResponse {
 
 typedef enum Method { GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD } Method;
 
+
 typedef struct ExpressResponse {
   Method method;
   int statusCode;
@@ -46,6 +49,11 @@ typedef struct ExpressResponse {
   size_t bodyLength;
   unsigned int timeout_ms;
 } ExpressResponse;
+
+typedef struct ExpressPromise {
+  pid_t pid;
+  ExpressResponse* res;
+} ExpressPromise;
 
 typedef struct ExpressRequest {
   char* url;
