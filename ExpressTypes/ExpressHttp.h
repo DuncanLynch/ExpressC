@@ -40,7 +40,7 @@ typedef enum Method { GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD } Method;
 
 
 typedef struct ExpressResponse {
-  Method method;
+  char *method;
   int statusCode;
   char *statusMessage;
   char *url;
@@ -56,12 +56,12 @@ typedef struct ExpressPromise {
 } ExpressPromise;
 
 typedef struct ExpressRequest {
-  char* url;
-  Method method;
-  char* httpVersion;
+  char *url;
+  char *method;
+  char *httpVersion;
   ExpressHeader *headers;
-  Params* param;
-  char* body;
+  Params *param;
+  char *body;
   size_t bodyLength;
   unsigned int timeout_ms;
 } ExpressRequest;
