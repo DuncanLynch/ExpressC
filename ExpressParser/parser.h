@@ -37,6 +37,7 @@ ExpressStatus add_request_header(ExpressRequest *req, const char *key,
                                  const char *value);
 ExpressStatus set_request_body(ExpressRequest *req, const char *body,
                                size_t length);
+ExpressStatus set_request_timeout(ExpressRequest* req, unsigned int ms);
 ExpressStatus add_request_param(ExpressRequest *req, const char *key,
                                 const char *value);
 ExpressStatus serialize_request(ExpressRequest *req, char *serialized);
