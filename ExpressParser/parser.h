@@ -28,7 +28,7 @@ ExpressStatus print_req(ExpressRequest *req);
 ExpressStatus print_res(ExpressResponse *res);
 
 // Request builder functions
-ExpressStatus init_request(ExpressRequest *req);
+ExpressStatus init_request(ExpressRequest **req);
 ExpressStatus set_request_method(ExpressRequest *req, const char *method);
 ExpressStatus set_request_url(ExpressRequest *req, const char *url);
 ExpressStatus set_request_http_version(ExpressRequest *req,
@@ -37,10 +37,11 @@ ExpressStatus add_request_header(ExpressRequest *req, const char *key,
                                  const char *value);
 ExpressStatus set_request_body(ExpressRequest *req, const char *body,
                                size_t length);
-ExpressStatus set_request_timeout(ExpressRequest* req, unsigned int ms);
+ExpressStatus set_request_timeout(ExpressRequest *req, unsigned int ms);
 ExpressStatus add_request_param(ExpressRequest *req, const char *key,
                                 const char *value);
-ExpressStatus serialize_request(ExpressRequest *req, char *serialized);
+ExpressStatus serialize_request(ExpressRequest *req, char *serialized,
+                                size_t *out_len);
 // Memory cleanup functions
 ExpressStatus free_request(ExpressRequest *req);
 ExpressStatus free_response(ExpressResponse *res);
