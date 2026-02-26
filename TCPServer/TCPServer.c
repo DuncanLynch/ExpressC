@@ -29,6 +29,8 @@ struct TCPConn {
     void* user;
 };
 
+
+
 static int set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) return -1;
@@ -191,84 +193,209 @@ static bool handle_read(int epfd, TCPConn *c, TCPServerConfig *config) {
 }
 
 static bool handle_write(int epfd, struct conn *c) {
-  if (c->out_len > c->out_off) {
-    return flush_out(epfd, c);
-  }
-  uint32_t ev = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
-  (void)mod_epoll(epfd, c->fd, ev, c);
-  return true;
+    if (c->out_len > c->out_off) {
+        return flush_out(epfd, c);
+    }
+    uint32_t ev = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
+    (void)mod_epoll(epfd, c->fd, ev, c);
+    return true;
 }
 
-int main(int argc, char **argv) {
-  if (argc != 2) {
-    fprintf(stderr, "usage: %s <port>\n", argv[0]);
-    return 2;
-  }
-  uint16_t port = (uint16_t)strtoul(argv[1], NULL, 10);
+struct TCPServer {
+    int server_fd;
+    int epfd;
+    tcp_on_accept_fn on_accept;
+    tcp_on_bytes_fn on_bytes;
+    tcp_on_close_fn on_close;
+    uint16_t port;
+    void* ctx;
+    struct epoll_event events[MAX_EVENTS];
+};
 
-  // Avoid SIGPIPE terminating process on send() to a dead peer.
-  signal(SIGPIPE, SIG_IGN);
+TCPServer* tcp_server_create(const TCPServerConfig* cnfg) {
+    TCPServer *server = (TCPServer *)calloc(1, sizeof(TCPServer));
+    if (!server) return NULL;
 
-  int listen_fd = create_listen_socket(port);
-  if (listen_fd == -1) die("create_listen_socket");
+    int listen_fd = create_listen_socket(port);
+    if (listen_fd == -1) die("create_listen_socket");
 
-  if (set_nonblocking(listen_fd) == -1) die("set_nonblocking(listen_fd)");
+    server->server_fd = listen_fd;
 
-  int epfd = epoll_create1(EPOLL_CLOEXEC);
-  if (epfd == -1) die("epoll_create1");
+    if (set_nonblocking(listen_fd) == -1) die("set_nonblocking(listen_fd)");
 
-  // Put listen socket into epoll
-  struct epoll_event ev;
-  memset(&ev, 0, sizeof(ev));
-  ev.events = EPOLLIN;
-  ev.data.fd = listen_fd;
-  if (epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev) == -1) die("epoll_ctl ADD listen");
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd == -1) die("epoll_create1");
 
-  fprintf(stderr, "listening on 0.0.0.0:%u\n", port);
+    server->epfd = epfd;
 
-  struct epoll_event events[MAX_EVENTS];
+    server->port = cnfg->port;
+    server->on_accept = cnfg->on_accept;
+    server->on_bytes = cnfg->on_bytes;
+    server->on_close = cnfg->on_close;
 
-  for (;;) {
-    int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
-    if (n == -1) {
-      if (errno == EINTR) continue;
-      die("epoll_wait");
-    }
-
-    for (int i = 0; i < n; i++) {
-      uint32_t e = events[i].events;
-
-      // Listener event uses data.fd; clients use data.ptr
-      if (events[i].data.fd == listen_fd) {
-        accept_loop(epfd, listen_fd);
-        continue;
-      }
-
-      struct conn *c = (struct conn *)events[i].data.ptr;
-
-      if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-        conn_close(epfd, c);
-        continue;
-      }
-
-      if (e & EPOLLIN) {
-        if (!handle_read(epfd, c)) {
-          conn_close(epfd, c);
-          continue;
-        }
-      }
-
-      if (e & EPOLLOUT) {
-        if (!handle_write(epfd, c)) {
-          conn_close(epfd, c);
-          continue;
-        }
-      }
-    }
-  }
-
-  // unreachable in this example
-  close(epfd);
-  close(listen_fd);
-  return 0;
+    return server;
 }
+
+int tcp_server_run(TCPServer *s) {
+    if (!s) return -1;
+
+    signal(SIGPIPE, SIG_IGN);
+
+    for (;;) {
+        int n = epoll_wait(s->epfd, s->events, MAX_EVENTS, -1);
+        if (n == -1) {
+            if (errno == EINTR) continue;
+            die("epoll_wait");
+        }
+
+        for (int i = 0; i < n; i++) {
+            uint32_t e = s->events[i].events;
+
+            if (s->events[i].data.fd == s->server_fd) {
+                accept_loop(s);
+                continue;
+            }
+
+            TCPConn *c = (TCPConn *)s->events[i].data.ptr;
+            if (!c) continue;
+
+            if (e & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                conn_close(c);
+                continue;
+            }
+
+            if (e & EPOLLIN) {
+                if (!handle_read(c)) {
+                    conn_close(c);
+                    continue;
+                }
+            }
+
+            if (e & EPOLLOUT) {
+                if (!handle_write(c)) {
+                    conn_close(c);
+                    continue;
+                }
+            }
+
+            if (c->close_now) {
+                conn_close(c);
+                continue;
+            }
+            if (c->close_after_write && c->out_len == c->out_off) {
+                conn_close(c);
+                continue;
+            }
+        }
+    }
+
+    return 0;
+}
+
+void tcp_server_destroy(TCPServer *s) {
+    if (!s) return;
+    if (s->epfd != -1) close(s->epfd);
+    if (s->server_fd != -1) close(s->server_fd);
+    free(s);
+}
+
+bool tcp_conn_write(TCPConn *c, const void *data, size_t len) {
+    if (!c || !data) return false;
+    if (len == 0) return true;
+    if (c->close_now) return false;
+
+    // If buffer empty, try direct send first (fast path)
+    if (c->out_len == c->out_off) {
+        c->out_len = 0;
+        c->out_off = 0;
+
+        ssize_t n = send(c->fd, data, len, 0);
+        if (n == (ssize_t)len) {
+            return true;
+        }
+        if (n < 0) {
+            if (!(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                return false;
+            }
+            n = 0;
+        }
+
+        // buffer the remainder
+        size_t off = (size_t)n;
+        size_t rem = len - off;
+        if (rem > BUF_CAP) return false;
+        memcpy(c->out, (const uint8_t *)data + off, rem);
+        c->out_len = rem;
+        c->out_off = 0;
+
+        // ensure EPOLLOUT interest
+        uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
+        (void)mod_epoll(c->server->epfd, c->fd, ev, c);
+        return true;
+    }
+
+    // Otherwise append into existing buffer
+    size_t pending = c->out_len - c->out_off;
+    if (pending + len > BUF_CAP) return false;
+
+    // compact to front if needed
+    if (c->out_off > 0 && pending > 0) {
+        memmove(c->out, c->out + c->out_off, pending);
+    }
+    c->out_off = 0;
+    c->out_len = pending;
+
+    memcpy(c->out + c->out_len, data, len);
+    c->out_len += len;
+
+    uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
+    (void)mod_epoll(c->server->epfd, c->fd, ev, c);
+
+    return true;
+}
+
+bool tcp_conn_write_str(TCPConn *c, const char *s) {
+    if (!s) return false;
+    return tcp_conn_write(c, s, strlen(s));
+}
+
+void tcp_conn_close_after_write(TCPConn *c) {
+    if (!c) return;
+    c->close_after_write = true;
+
+    if (c->out_len == c->out_off) {
+        c->close_now = true;
+        shutdown(c->fd, SHUT_RDWR);
+    }
+}
+
+void tcp_conn_close_now(TCPConn *c) {
+    if (!c) return;
+    c->close_now = true;
+    c->close_after_write = false;
+    c->out_len = c->out_off = 0;
+    shutdown(c->fd, SHUT_RDWR);
+}
+
+void tcp_conn_set_user(TCPConn *c, void *user) {
+    if (!c) return;
+    c->user = user;
+}
+
+void *tcp_conn_get_user(TCPConn *c) {
+    if (!c) return NULL;
+    return c->user;
+}
+
+const char *tcp_conn_ip(const TCPConn *c) {
+    if (!c) return "";
+    return c->ip;
+}
+
+uint16_t tcp_conn_port(const TCPConn *c) {
+    if (!c) return 0;
+    return c->port;
+}
+
+
+//   

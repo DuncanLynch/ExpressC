@@ -17,6 +17,13 @@ typedef struct TCPServer TCPServer;
 
 typedef struct TCPConn TCPConn;
 
+typedef void (*tcp_on_bytes_fn)(void *ctx, TCPConn *c,
+                                const byte *data, size_t len);
+
+typedef void (*tcp_on_accept_fn)(void *ctx, TCPConn *conn);
+typedef void (*tcp_on_close_fn)(void *ctx, TCPConn *c);
+
+
 typedef struct TCPServerConfig {
     tcp_on_accept_fn on_accept;
     tcp_on_bytes_fn on_bytes;
@@ -24,12 +31,6 @@ typedef struct TCPServerConfig {
     uint16_t port;
     void* ctx;
 } TCPServerConfig;
-
-typedef void (*tcp_on_bytes_fn)(void *ctx, TCPConn *c,
-                                const byte *data, size_t len);
-
-typedef void (*tcp_on_accept_fn)(void *ctx, TCPConn *conn);
-typedef void (*tcp_on_close_fn)(void *ctx, TCPConn *c);
 
 TCPServer *tcp_server_create(const TCPServerConfig *cfg);
 int        tcp_server_run(TCPServer *s);
