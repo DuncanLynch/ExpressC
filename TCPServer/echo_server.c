@@ -58,7 +58,7 @@ static void on_close(void* ctx, TCPConn* c) {
     ConnState* st = (ConnState*)tcp_conn_get_user(c);
     size_t total = st ? st->total_bytes : 0;
 
-    fprintf(stderr, "[close ] %s:%u total_bytes=%zu\n", tcp_conn_ip(c),
+    fprintf(stderr, "[close] %s:%u total_bytes=%zu\n", tcp_conn_ip(c),
             tcp_conn_port(c), total);
 
     free(st);
