@@ -16,8 +16,9 @@
 
 struct TCPConn {
     int fd;
-    uint8_t out[BUF_CAP];
+    byte* out;
     size_t out_len;
+    size_t out_cap;
     size_t out_off;
 
     char ip[INET_ADDRSTRLEN];
@@ -57,6 +58,8 @@ static TCPConn* conn_create(int fd) {
     TCPConn* c = (TCPConn*)calloc(1, sizeof(*c));
     if (!c) return NULL;
     c->fd = fd;
+    c->out = (byte*)calloc(BUF_CAP, sizeof(byte));
+    c->out_cap = BUF_CAP;
     return c;
 }
 
@@ -65,6 +68,7 @@ static void conn_close(int epfd, TCPConn* c, TCPServer* s) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, c->fd, NULL);
     close(c->fd);
     if (s->on_close) s->on_close(s->ctx, c);
+    free(c->out);
     free(c);
 }
 
@@ -311,6 +315,24 @@ void tcp_server_destroy(TCPServer* s) {
     free(s);
 }
 
+static bool resize_conn_cap(TCPConn* c, size_t need) {
+    if (!c) return false;
+
+    size_t new_cap = c->out_cap ? c->out_cap : BUF_CAP;
+
+    while (new_cap < need) {
+        if (new_cap > SIZE_MAX / 2) return false;
+        new_cap *= 2;
+    }
+
+    void* p = realloc(c->out, new_cap);
+    if (!p) return false; 
+
+    c->out = (byte*)p;
+    c->out_cap = new_cap;
+    return true;
+}
+
 bool tcp_conn_write(TCPConn* c, const void* data, size_t len) {
     if (!c || !data) return false;
     if (len == 0) return true;
@@ -333,7 +355,7 @@ bool tcp_conn_write(TCPConn* c, const void* data, size_t len) {
 
         size_t off = (size_t)n;
         size_t rem = len - off;
-        if (rem > BUF_CAP) return false;
+        if (rem > c->out_cap) (void)resize_conn_cap(c, rem);
         memcpy(c->out, (const uint8_t*)data + off, rem);
         c->out_len = rem;
         c->out_off = 0;
@@ -344,7 +366,7 @@ bool tcp_conn_write(TCPConn* c, const void* data, size_t len) {
     }
 
     size_t pending = c->out_len - c->out_off;
-    if (pending + len > BUF_CAP) return false;
+    if (pending + len > c->out_cap) return false;
 
     if (c->out_off > 0 && pending > 0) {
         memmove(c->out, c->out + c->out_off, pending);
