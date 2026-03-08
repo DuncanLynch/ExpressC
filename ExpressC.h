@@ -1,6 +1,14 @@
 #pragma once
 #include <stdint.h>
 
+enum Method {
+    GET = 0,
+    POST = 1,
+    DELETE = 2,
+    PUT = 3,
+    PATCH = 4,
+};
+
 typedef struct ExpressServer ExpressServer;
 
 typedef struct ExpressRouter ExpressRouter;
@@ -20,9 +28,9 @@ typedef void (*middleware_handler)(void* ctx, http_request* req,
                                    http_response* res);
 
 ExpressRouter* router_new();
-void router_add(ExpressRouter* r, char* route, char* method,
-                route_handler routing_func);
-void router_add_middleware(ExpressRouter* r, middleware_handler mware_func);
+int32_t router_add(ExpressRouter* r, char* route, enum Method method,
+                   route_handler routing_func);
+int32_t router_add_middleware(ExpressRouter* r, middleware_handler mware_func);
 void router_destroy(ExpressRouter* r);
 
 ExpressServer* server_new(ExpressConfig* cnfg, ExpressRouter* router);

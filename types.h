@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-typedef u_int16_t byte;
+typedef uint8_t byte;
 
 typedef struct params {
     char* key;
