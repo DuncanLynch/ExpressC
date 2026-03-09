@@ -1,5 +1,7 @@
 #pragma once
 #include <stdint.h>
+#include <types.h>
+#include <stdbool.h>
 
 enum Method {
     GET = 0,
@@ -36,3 +38,15 @@ void router_destroy(ExpressRouter* r);
 ExpressServer* server_new(ExpressConfig* cnfg, ExpressRouter* router);
 void server_run(ExpressServer* server);
 void server_destroy(ExpressServer* server);
+
+param* get_request_param(http_request* req, const char* key);
+param* get_request_route_param(http_request* req, const char* key);
+header* get_request_header(http_request* req, const char* key);
+byte* get_request_body(http_request* req);
+size_t get_request_body_len(http_request* req);
+char* get_request_content_type(http_request* req);
+
+header* get_response_header(http_response* res, const char* key);
+bool set_response_header(http_response* res, const char* key, const char* value);
+bool set_response_body(http_response* res, const byte* body, const size_t body_len);
+bool set_response_status(http_response* res, const char* status);

@@ -3,12 +3,15 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#define MAX_HEADERS 128
+#define MAX_PARAMS 128
+
 typedef uint8_t byte;
 
-typedef struct params {
+typedef struct param {
     char* key;
     char* value;
-} params;
+} param;
 
 typedef struct header {
     char* key;
@@ -16,13 +19,14 @@ typedef struct header {
 } header;
 
 typedef struct http_request {
-    char* route;
-    char* method;
-    params* request_params;
+    char route[1024];
+    char method[16];
+    char version[16];
+    param request_params[MAX_PARAMS];
     size_t request_params_len;
-    params* route_params;
+    param route_params[MAX_PARAMS];
     size_t route_params_len;
-    header* headers;
+    header headers[MAX_HEADERS];
     size_t headers_len;
     char* host;
     size_t content_length;
