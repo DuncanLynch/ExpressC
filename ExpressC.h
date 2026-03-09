@@ -9,6 +9,7 @@ enum Method {
     DELETE = 2,
     PUT = 3,
     PATCH = 4,
+    HEAD = 5,
 };
 
 typedef struct ExpressServer ExpressServer;

@@ -8,7 +8,7 @@
 #include "TCPServer/TCPServer.h"
 #include "types.h"
 
-#define MAX_METHODS 5
+#define MAX_METHODS 6
 #define MAX_ROUTES 512
 
 struct HTTPConn {
@@ -17,6 +17,7 @@ struct HTTPConn {
     size_t bytes_off;
     size_t bytes_cap;
     bool parsed_headers;
+    bool sent_continue;
 
     http_request* req;
 };
@@ -141,6 +142,99 @@ static bool parse_content_length_value(const char* value, size_t* out) {
     *out = result;
     return true;
 }
+
+static bool parse_http_status_code(const char* status_code,
+                                   uint16_t* out_status_code) {
+    if (status_code == NULL || status_code[0] == '\0' ||
+        status_code[1] == '\0' || status_code[2] == '\0' ||
+        status_code[3] != '\0') {
+        return false;
+    }
+
+    uint16_t code = 0;
+    for (size_t i = 0; i < 3; i++) {
+        unsigned char digit = (unsigned char)status_code[i];
+        if (!isdigit(digit)) return false;
+        code = (uint16_t)((code * 10) + (uint16_t)(digit - '0'));
+    }
+
+    if (code < 100 || code > 599) return false;
+
+    if (out_status_code != NULL) *out_status_code = code;
+    return true;
+}
+
+static bool caseless_token_equals(const char* start, const char* end,
+                                  const char* token) {
+    if (start == NULL || end == NULL || token == NULL || start > end) {
+        return false;
+    }
+
+    size_t len = (size_t)(end - start);
+    size_t token_len = strlen(token);
+    if (len != token_len) return false;
+
+    for (size_t i = 0; i < len; i++) {
+        int lhs = tolower((unsigned char)start[i]);
+        int rhs = tolower((unsigned char)token[i]);
+        if (lhs != rhs) return false;
+    }
+
+    return true;
+}
+
+static bool header_value_has_token(const char* value, const char* token) {
+    if (value == NULL || token == NULL) return false;
+
+    const char* cursor = value;
+    while (*cursor != '\0') {
+        while (*cursor != '\0' &&
+               (isspace((unsigned char)*cursor) || *cursor == ',')) {
+            cursor++;
+        }
+
+        const char* token_start = cursor;
+        while (*cursor != '\0' && *cursor != ',') cursor++;
+
+        const char* token_end = cursor;
+        while (token_end > token_start &&
+               isspace((unsigned char)*(token_end - 1))) {
+            token_end--;
+        }
+
+        if (caseless_token_equals(token_start, token_end, token)) return true;
+    }
+
+    return false;
+}
+
+static bool header_value_has_only_token(const char* value, const char* token) {
+    if (value == NULL || token == NULL) return false;
+
+    bool saw_token = false;
+    const char* cursor = value;
+    while (*cursor != '\0') {
+        while (*cursor != '\0' &&
+               (isspace((unsigned char)*cursor) || *cursor == ',')) {
+            cursor++;
+        }
+        if (*cursor == '\0') break;
+
+        const char* token_start = cursor;
+        while (*cursor != '\0' && *cursor != ',') cursor++;
+
+        const char* token_end = cursor;
+        while (token_end > token_start &&
+               isspace((unsigned char)*(token_end - 1))) {
+            token_end--;
+        }
+
+        if (!caseless_token_equals(token_start, token_end, token)) return false;
+        saw_token = true;
+    }
+
+    return saw_token;
+}
 static bool ensure_http_conn_cap(struct HTTPConn* conn, size_t need) {
     if (conn == NULL) return false;
     if (need <= conn->bytes_cap) return true;
@@ -179,18 +273,41 @@ static void http_request_cleanup(http_request* req) {
 
     free(req);
 }
-static void http_conn_reset(struct HTTPConn* conn) {
+
+static void http_conn_clear_request(struct HTTPConn* conn) {
     if (conn == NULL) return;
 
     http_request_cleanup(conn->req);
+    conn->req = NULL;
+    conn->parsed_headers = false;
+    conn->sent_continue = false;
+    conn->bytes_off = 0;
+}
+
+static void http_conn_reset(struct HTTPConn* conn) {
+    if (conn == NULL) return;
+
+    http_conn_clear_request(conn);
     free(conn->bytes);
 
-    conn->req = NULL;
     conn->bytes = NULL;
-    conn->parsed_headers = false;
     conn->bytes_len = 0;
-    conn->bytes_off = 0;
     conn->bytes_cap = 0;
+}
+
+static void http_conn_consume_bytes(struct HTTPConn* conn, size_t consumed) {
+    if (conn == NULL) return;
+
+    if (consumed >= conn->bytes_len) {
+        conn->bytes_len = 0;
+        if (conn->bytes != NULL) conn->bytes[0] = '\0';
+        return;
+    }
+
+    size_t remaining = conn->bytes_len - consumed;
+    memmove(conn->bytes, conn->bytes + consumed, remaining);
+    conn->bytes_len = remaining;
+    conn->bytes[remaining] = '\0';
 }
 
 static void http_conn_destroy(struct HTTPConn* conn) {
@@ -207,6 +324,26 @@ static http_response response_default(void) {
     return res;
 }
 
+static const char* validated_response_status_code(const http_response* res) {
+    const char* status_code =
+        (res != NULL && res->status_code != NULL) ? res->status_code : "200";
+
+    if (!parse_http_status_code(status_code, NULL)) return "500";
+    return status_code;
+}
+
+void log_response(TCPConn* conn, const http_request* req, const http_response* res) {
+    const char* ip = tcp_conn_ip(conn);
+    const char* status_code = validated_response_status_code(res);
+
+    printf("%s \"%s %s\" %s %zu\n",
+           ip ? ip : "-",
+           req->method,
+           req->route,
+           status_code,
+           res->content_length);
+}
+
 static void response_set_static(http_response* res, const char* status_code,
                                 const char* body) {
     if (res == NULL) return;
@@ -217,13 +354,141 @@ static void response_set_static(http_response* res, const char* status_code,
 }
 
 static const char* reason_phrase(const char* status_code) {
-    if (status_code == NULL) return "OK";
-    if (strcmp(status_code, "200") == 0) return "OK";
-    if (strcmp(status_code, "400") == 0) return "Bad Request";
-    if (strcmp(status_code, "404") == 0) return "Not Found";
-    if (strcmp(status_code, "405") == 0) return "Method Not Allowed";
-    if (strcmp(status_code, "500") == 0) return "Internal Server Error";
-    return "OK";
+    uint16_t code = 0;
+    if (!parse_http_status_code(status_code, &code)) return "Internal Server Error";
+
+    switch (code) {
+        case 100:
+            return "Continue";
+        case 101:
+            return "Switching Protocols";
+        case 102:
+            return "Processing";
+        case 103:
+            return "Early Hints";
+        case 104:
+            return "Upload Resumption Supported";
+        case 200:
+            return "OK";
+        case 201:
+            return "Created";
+        case 202:
+            return "Accepted";
+        case 203:
+            return "Non-Authoritative Information";
+        case 204:
+            return "No Content";
+        case 205:
+            return "Reset Content";
+        case 206:
+            return "Partial Content";
+        case 207:
+            return "Multi-Status";
+        case 208:
+            return "Already Reported";
+        case 226:
+            return "IM Used";
+        case 300:
+            return "Multiple Choices";
+        case 301:
+            return "Moved Permanently";
+        case 302:
+            return "Found";
+        case 303:
+            return "See Other";
+        case 304:
+            return "Not Modified";
+        case 305:
+            return "Use Proxy";
+        case 306:
+            return "(Unused)";
+        case 307:
+            return "Temporary Redirect";
+        case 308:
+            return "Permanent Redirect";
+        case 400:
+            return "Bad Request";
+        case 401:
+            return "Unauthorized";
+        case 402:
+            return "Payment Required";
+        case 403:
+            return "Forbidden";
+        case 404:
+            return "Not Found";
+        case 405:
+            return "Method Not Allowed";
+        case 406:
+            return "Not Acceptable";
+        case 407:
+            return "Proxy Authentication Required";
+        case 408:
+            return "Request Timeout";
+        case 409:
+            return "Conflict";
+        case 410:
+            return "Gone";
+        case 411:
+            return "Length Required";
+        case 412:
+            return "Precondition Failed";
+        case 413:
+            return "Content Too Large";
+        case 414:
+            return "URI Too Long";
+        case 415:
+            return "Unsupported Media Type";
+        case 416:
+            return "Range Not Satisfiable";
+        case 417:
+            return "Expectation Failed";
+        case 418:
+            return "(Unused)";
+        case 421:
+            return "Misdirected Request";
+        case 422:
+            return "Unprocessable Content";
+        case 423:
+            return "Locked";
+        case 424:
+            return "Failed Dependency";
+        case 425:
+            return "Too Early";
+        case 426:
+            return "Upgrade Required";
+        case 428:
+            return "Precondition Required";
+        case 429:
+            return "Too Many Requests";
+        case 431:
+            return "Request Header Fields Too Large";
+        case 451:
+            return "Unavailable For Legal Reasons";
+        case 500:
+            return "Internal Server Error";
+        case 501:
+            return "Not Implemented";
+        case 502:
+            return "Bad Gateway";
+        case 503:
+            return "Service Unavailable";
+        case 504:
+            return "Gateway Timeout";
+        case 505:
+            return "HTTP Version Not Supported";
+        case 506:
+            return "Variant Also Negotiates";
+        case 507:
+            return "Insufficient Storage";
+        case 508:
+            return "Loop Detected";
+        case 510:
+            return "Not Extended";
+        case 511:
+            return "Network Authentication Required";
+        default:
+            return "";
+    }
 }
 
 static bool parse_request_line(http_request* req, const char* request_line) {
@@ -278,6 +543,8 @@ static int32_t parse_headers(const struct HTTPConn* c, http_request* req) {
     req->content_type = NULL;
     req->body = NULL;
 
+    size_t host_count = 0;
+
     if (!parse_request_line(req, (char*)c->bytes)) return -2;
 
     const char* line = strstr((char*)c->bytes, "\r\n");
@@ -311,7 +578,9 @@ static int32_t parse_headers(const struct HTTPConn* c, http_request* req) {
         req->headers_len++;
 
         if (caseless_stricmp(key, "Host") == 0) {
+            host_count++;
             req->host = value;
+            if (*value == '\0' || host_count > 1) return -3;
         } else if (caseless_stricmp(key, "Content-Type") == 0) {
             req->content_type = value;
         } else if (caseless_stricmp(key, "Content-Length") == 0) {
@@ -322,6 +591,8 @@ static int32_t parse_headers(const struct HTTPConn* c, http_request* req) {
 
         line = line_end + 2;
     }
+
+    if (strcmp(req->version, "HTTP/1.1") == 0 && host_count != 1) return -3;
 
     return (int32_t)header_bytes;
 }
@@ -334,6 +605,158 @@ static bool response_has_header(const http_response* res, const char* key) {
     }
 
     return false;
+}
+
+static bool request_has_supported_version(const http_request* req) {
+    if (req == NULL) return false;
+
+    return strcmp(req->version, "HTTP/1.1") == 0 ||
+           strcmp(req->version, "HTTP/1.0") == 0;
+}
+
+static bool request_expectation_supported(const http_request* req) {
+    if (req == NULL) return false;
+
+    header* expect = get_request_header((http_request*)req, "Expect");
+    if (expect == NULL) return true;
+
+    return strcmp(req->version, "HTTP/1.1") == 0 &&
+           header_value_has_only_token(expect->value, "100-continue");
+}
+
+static bool request_expects_continue(const http_request* req) {
+    if (req == NULL) return false;
+
+    header* expect = get_request_header((http_request*)req, "Expect");
+    if (expect == NULL) return false;
+
+    return header_value_has_only_token(expect->value, "100-continue");
+}
+
+static bool request_is_head(const http_request* req) {
+    return req != NULL && strcmp(req->method, "HEAD") == 0;
+}
+
+static const char* response_http_version(const http_request* req) {
+    if (req != NULL && strcmp(req->version, "HTTP/1.0") == 0) {
+        return "HTTP/1.0";
+    }
+
+    return "HTTP/1.1";
+}
+
+static bool response_must_not_have_body(const http_request* req,
+                                        const http_response* res) {
+    const char* status_code = validated_response_status_code(res);
+
+    if (request_is_head(req)) return true;
+    if (status_code[0] == '1') return true;
+
+    return strcmp(status_code, "204") == 0 ||
+           strcmp(status_code, "304") == 0;
+}
+
+static bool write_continue_response(TCPConn* c) {
+    return tcp_conn_write_str(c, "HTTP/1.1 100 Continue\r\n\r\n");
+}
+
+static const char* method_name(enum Method method) {
+    switch (method) {
+        case GET:
+            return "GET";
+        case POST:
+            return "POST";
+        case DELETE:
+            return "DELETE";
+        case PUT:
+            return "PUT";
+        case PATCH:
+            return "PATCH";
+        case HEAD:
+            return "HEAD";
+        default:
+            return NULL;
+    }
+}
+
+static bool route_supports_method(const struct Route* route,
+                                  enum Method method) {
+    if (route == NULL || method >= MAX_METHODS) return false;
+
+    if (method == HEAD) {
+        return route->handlers[HEAD].handler != NULL ||
+               route->handlers[GET].handler != NULL;
+    }
+
+    return route->handlers[method].handler != NULL;
+}
+
+static bool append_allow_method(char* buffer, size_t buffer_size, size_t* off,
+                                const char* method) {
+    if (buffer == NULL || off == NULL || method == NULL) return false;
+
+    size_t method_len = strlen(method);
+    size_t prefix_len = *off == 0 ? 0 : 2;
+    if (*off + prefix_len + method_len + 1 > buffer_size) return false;
+
+    if (prefix_len != 0) {
+        buffer[(*off)++] = ',';
+        buffer[(*off)++] = ' ';
+    }
+
+    memcpy(buffer + *off, method, method_len);
+    *off += method_len;
+    buffer[*off] = '\0';
+    return true;
+}
+
+static bool build_allow_header_value(const struct Route* route, char* buffer,
+                                     size_t buffer_size) {
+    if (route == NULL || buffer == NULL || buffer_size == 0) return false;
+
+    static const enum Method allow_order[] = {GET, HEAD, POST, PUT, DELETE,
+                                              PATCH};
+
+    size_t off = 0;
+    buffer[0] = '\0';
+    for (size_t i = 0; i < sizeof(allow_order) / sizeof(allow_order[0]); i++) {
+        enum Method method = allow_order[i];
+        if (!route_supports_method(route, method)) continue;
+        if (!append_allow_method(buffer, buffer_size, &off,
+                                 method_name(method))) {
+            return false;
+        }
+    }
+
+    return off != 0;
+}
+
+static bool request_should_keep_alive(const http_request* req) {
+    if (req == NULL) return false;
+
+    header* connection = get_request_header((http_request*)req, "Connection");
+    if (strcmp(req->version, "HTTP/1.1") == 0) {
+        return connection == NULL ||
+               !header_value_has_token(connection->value, "close");
+    }
+
+    if (strcmp(req->version, "HTTP/1.0") == 0) {
+        return connection != NULL &&
+               header_value_has_token(connection->value, "keep-alive");
+    }
+
+    return false;
+}
+
+static bool response_should_close(const http_request* req,
+                                  const http_response* res) {
+    header* connection = get_response_header((http_response*)res, "Connection");
+    if (connection != NULL && connection->value != NULL) {
+        if (header_value_has_token(connection->value, "close")) return true;
+        if (header_value_has_token(connection->value, "keep-alive")) return false;
+    }
+
+    return !request_should_keep_alive(req);
 }
 
 static void response_cleanup(http_response* res) {
@@ -349,7 +772,7 @@ param* get_request_param(http_request* req, const char* key) {
 
     for (size_t i = 0; i < req->request_params_len; i++) {
         if (req->request_params[i].key == NULL) continue;
-        if (strcmp(req->request_params[i].key, key) == 0) {
+        if (caseless_stricmp(req->request_params[i].key, key) == 0) {
             return &req->request_params[i];
         }
     }
@@ -362,7 +785,7 @@ param* get_request_route_param(http_request* req, const char* key) {
 
     for (size_t i = 0; i < req->route_params_len; i++) {
         if (req->route_params[i].key == NULL) continue;
-        if (strcmp(req->route_params[i].key, key) == 0) {
+        if (caseless_stricmp(req->route_params[i].key, key) == 0) {
             return &req->route_params[i];
         }
     }
@@ -447,23 +870,25 @@ bool set_response_body(http_response* res, const byte* body,
 }
 
 bool set_response_status(http_response* res, const char* status) {
-    if (res == NULL || status == NULL) return false;
+    if (res == NULL || !parse_http_status_code(status, NULL)) return false;
 
     res->status_code = (char*)status;
     return true;
 }
 
 
-static bool write_response(TCPConn* c, const http_response* res) {
+static bool write_response(TCPConn* c, const http_request* req,
+                           const http_response* res) {
     char line[1024];
-    bool close = false;
-    const char* status_code =
-        (res != NULL && res->status_code != NULL) ? res->status_code : "200";
+    const char* status_code = validated_response_status_code(res);
     const char* reason = reason_phrase(status_code);
+    const char* version = response_http_version(req);
     size_t content_length = res != NULL ? res->content_length : 0;
+    bool close = response_should_close(req, res);
+    bool omit_body = response_must_not_have_body(req, res);
 
-    int len = snprintf(line, sizeof(line), "HTTP/1.1 %s %s\r\n", status_code,
-                       reason);
+    int len = snprintf(line, sizeof(line), "%s %s %s\r\n", version,
+                       status_code, reason);
     if (len < 0 || (size_t)len >= sizeof(line)) return false;
     if (!tcp_conn_write(c, line, (size_t)len)) return false;
 
@@ -475,8 +900,19 @@ static bool write_response(TCPConn* c, const http_response* res) {
     }
 
     if (!response_has_header(res, "Connection")) {
-        if (!tcp_conn_write_str(c, "Connection: close\r\n")) return false;
-        close = true;
+        const char* connection_value = NULL;
+        if (close) {
+            connection_value = "close";
+        } else if (req != NULL && strcmp(req->version, "HTTP/1.0") == 0) {
+            connection_value = "keep-alive";
+        }
+
+        if (connection_value != NULL) {
+            len = snprintf(line, sizeof(line), "Connection: %s\r\n",
+                           connection_value);
+            if (len < 0 || (size_t)len >= sizeof(line)) return false;
+            if (!tcp_conn_write(c, line, (size_t)len)) return false;
+        }
     }
 
     if (res != NULL) {
@@ -493,14 +929,9 @@ static bool write_response(TCPConn* c, const http_response* res) {
 
     if (!tcp_conn_write_str(c, "\r\n")) return false;
 
-    if (res != NULL && res->body != NULL && res->content_length > 0) {
+    if (!omit_body && res != NULL && res->body != NULL &&
+        res->content_length > 0) {
         if (!tcp_conn_write(c, res->body, res->content_length)) return false;
-    }
-    
-    header* hd = get_response_header((http_response*)res, "Connection");
-    if (hd != NULL && hd->value != NULL &&
-        caseless_stricmp(hd->value, "close") == 0) {
-        close = true;
     }
 
     if (close) tcp_conn_close_after_write(c);
@@ -522,6 +953,8 @@ enum Method get_method_from_str(char* method) {
         return PUT;
     } else if (strcmp(method, "PATCH") == 0) {
         return PATCH;
+    } else if (strcmp(method, "HEAD") == 0) {
+        return HEAD;
     }
 
     return (enum Method)MAX_METHODS;
@@ -592,6 +1025,7 @@ void on_close(void* ctx, TCPConn* c) {
 void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
     struct HTTPConn* conn = (struct HTTPConn*)tcp_conn_get_user(c);
     ExpressServer* s = (ExpressServer*)ctx;
+
     if (conn == NULL || s == NULL) {
         tcp_conn_close_now(c);
         return;
@@ -607,60 +1041,126 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
     conn->bytes_len += len;
     conn->bytes[conn->bytes_len] = '\0';
 
-    if (conn->req == NULL) {
-        conn->req = (http_request*)calloc(1, sizeof(*conn->req));
+    for (;;) {
         if (conn->req == NULL) {
-            tcp_conn_close_now(c);
-            return;
+            conn->req = (http_request*)calloc(1, sizeof(*conn->req));
+            if (conn->req == NULL) {
+                tcp_conn_close_now(c);
+                return;
+            }
         }
-    }
 
-    http_request* req = conn->req;
-    if (!conn->parsed_headers) {
-        int32_t header_bytes = parse_headers(conn, req);
-        if (header_bytes == -1) return;
-        if (header_bytes < 0) {
-            http_response bad = response_default();
-            response_set_static(&bad, "400", "Bad Request");
-            (void)write_response(c, &bad);
-            response_cleanup(&bad);
+        http_request* req = conn->req;
+        if (!conn->parsed_headers) {
+            int32_t header_bytes = parse_headers(conn, req);
+            if (header_bytes == -1) return;
+            if (header_bytes < 0) {
+                http_response bad = response_default();
+                response_set_static(&bad, "400", "Bad Request");
+                (void)set_response_header(&bad, "Connection", "close");
+                (void)write_response(c, req, &bad);
+                log_response(c, req, &bad);
+                response_cleanup(&bad);
+                http_conn_reset(conn);
+                return;
+            }
+
+            conn->parsed_headers = true;
+            conn->bytes_off = (size_t)header_bytes;
+        }
+
+        if (!request_has_supported_version(req)) {
+            http_response unsupported = response_default();
+            response_set_static(&unsupported, "505", "HTTP Version Not Supported");
+            (void)set_response_header(&unsupported, "Connection", "close");
+            (void)write_response(c, req, &unsupported);
+            log_response(c, req, &unsupported);
+            response_cleanup(&unsupported);
             http_conn_reset(conn);
             return;
         }
 
-        conn->parsed_headers = true;
-        conn->bytes_off = (size_t)header_bytes;
+        if (!request_expectation_supported(req)) {
+            http_response failed = response_default();
+            response_set_static(&failed, "417", "Expectation Failed");
+            (void)set_response_header(&failed, "Connection", "close");
+            (void)write_response(c, req, &failed);
+            log_response(c, req, &failed);
+            response_cleanup(&failed);
+            http_conn_reset(conn);
+            return;
+        }
+
+        size_t body_bytes = conn->bytes_len - conn->bytes_off;
+        if (!conn->sent_continue && request_expects_continue(req) &&
+            req->content_length > body_bytes) {
+            if (!write_continue_response(c)) {
+                tcp_conn_close_now(c);
+                return;
+            }
+            conn->sent_continue = true;
+        }
+
+        if (req->content_length > body_bytes) return;
+
+        req->body =
+            req->content_length == 0 ? NULL : conn->bytes + conn->bytes_off;
+
+        http_response res = response_default();
+        char allow_header[64];
+        enum Method method = get_method_from_str(req->method);
+        enum Method handler_method = method;
+        struct Route* r = find_route(s->router, req->route);
+        route_handler handler = NULL;
+
+        if (r != NULL && method < MAX_METHODS) {
+            if (method == HEAD && r->handlers[HEAD].handler == NULL) {
+                handler_method = GET;
+            }
+
+            if (handler_method < MAX_METHODS) {
+                handler = r->handlers[handler_method].handler;
+            }
+        }
+
+        if (s->router->mware_func != NULL) {
+            s->router->mware_func(s->user_ctx, req, &res);
+        }
+
+        if (r == NULL) {
+            response_set_static(&res, "404", "Not Found");
+        } else if (method >= MAX_METHODS) {
+            response_set_static(&res, "405", "Method Not Allowed");
+        } else if (handler == NULL) {
+            response_set_static(&res, "405", "Method Not Allowed");
+        } else {
+            handler(s->user_ctx, req, &res);
+            s->total_requests++;
+        }
+
+        if (strcmp(res.status_code, "405") == 0 &&
+            build_allow_header_value(r, allow_header, sizeof(allow_header))) {
+            (void)set_response_header(&res, "Allow", allow_header);
+        }
+
+        bool close = response_should_close(req, &res);
+        if (!write_response(c, req, &res)) {
+            response_cleanup(&res);
+            tcp_conn_close_now(c);
+            return;
+        }
+
+        log_response(c, req, &res);
+
+        size_t consumed = conn->bytes_off + req->content_length;
+        response_cleanup(&res);
+        http_conn_clear_request(conn);
+
+        if (close) return;
+
+        http_conn_consume_bytes(conn, consumed);
+        if (conn->bytes_len == 0) return;
     }
-
-    if (req->content_length > conn->bytes_len - conn->bytes_off) return;
-
-    req->body = req->content_length == 0 ? NULL : conn->bytes + conn->bytes_off;
-
-    http_response res = response_default();
-    enum Method method = get_method_from_str(req->method);
-    struct Route* r = find_route(s->router, req->route);
-
-    if (s->router->mware_func != NULL) {
-        s->router->mware_func(s->user_ctx, req, &res);
-    }
-
-    if (method >= MAX_METHODS) {
-        response_set_static(&res, "405", "Method Not Allowed");
-    } else if (r == NULL) {
-        response_set_static(&res, "404", "Not Found");
-    } else if (r->handlers[method].handler == NULL) {
-        response_set_static(&res, "405", "Method Not Allowed");
-    } else {
-        r->handlers[method].handler(s->user_ctx, req, &res);
-        s->total_requests++;
-    }
-
-    if (!write_response(c, &res)) {
-        tcp_conn_close_now(c);
-    }
-
-    response_cleanup(&res);
-    http_conn_reset(conn);
 }
 
 ExpressServer* server_new(ExpressConfig* cnfg, ExpressRouter* router) {

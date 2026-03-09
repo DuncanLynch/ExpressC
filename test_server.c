@@ -10,6 +10,13 @@ static void set_text_plain(http_response* res) {
     (void)set_response_header(res, "Content-Type", "text/plain; charset=utf-8");
 }
 
+typedef struct serverctx {
+    char lastmessage[256];
+    size_t message_len;
+    int numbers[5];
+} serverctx;
+
+
 static void index_handler(void* ctx, http_request* req, http_response* res) {
     (void)ctx;
     (void)req;
@@ -48,6 +55,29 @@ static void echo_handler(void* ctx, http_request* req, http_response* res) {
     (void)set_response_body(res, body, body_len);
 }
 
+static void post_message_handler(void* ctx, http_request* req, http_response* res) {
+    serverctx* context = (serverctx*) ctx;
+    const byte* body = get_request_body(req);
+    size_t body_len = get_request_body_len(req);
+    char* content_type = get_request_content_type(req);
+
+    if (strcmp(content_type, "text/plain") != 0 || body_len > 255) {
+        (void)set_response_status(res, "400");
+        return;
+    }
+
+    memcpy(context->lastmessage, body, body_len);
+    context->lastmessage[body_len] = '\0';
+    context->message_len = body_len;
+}
+
+static void get_message_handler(void* ctx, http_request* req, http_response* res) {
+    serverctx* context = (serverctx*) ctx;
+    (void)req;
+
+    set_response_body(res, (byte*)context->lastmessage,  context->message_len);
+}
+
 int main(int argc, char** argv) {
     uint16_t port = 8080;
     if (argc >= 2) {
@@ -65,7 +95,10 @@ int main(int argc, char** argv) {
 
     if (router_add(router, (char*)"/", GET, index_handler) != 0 ||
         router_add(router, (char*)"/ping", GET, ping_handler) != 0 ||
-        router_add(router, (char*)"/echo", POST, echo_handler) != 0) {
+        router_add(router, (char*)"/echo", POST, echo_handler) != 0 ||
+        router_add(router, (char*)"/message", GET, get_message_handler) != 0 ||
+        router_add(router, (char*)"/message", POST, post_message_handler)
+    ) {
         fprintf(stderr, "router_add failed\n");
         router_destroy(router);
         return 1;
