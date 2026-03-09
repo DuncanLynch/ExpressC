@@ -143,8 +143,8 @@ static void accept_loop(TCPServer* s) {
 
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &in_addr.sin_addr, ip, sizeof(ip));
-        fprintf(stderr, "accepted %s:%u (fd=%d)\n", ip, ntohs(in_addr.sin_port),
-                cfd);
+        //fprintf(stderr, "accepted %s:%u (fd=%d)\n", ip, ntohs(in_addr.sin_port),
+        //        cfd);
         snprintf(c->ip, sizeof(c->ip), "%s", ip);
         c->port = ntohs(in_addr.sin_port);
         c->server = s;
