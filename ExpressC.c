@@ -89,8 +89,7 @@ static char* skip_ascii_whitespace(char* s) {
     return s;
 }
 
-static const char* skip_const_ascii_whitespace(const char* s,
-                                               const char* end) {
+static const char* skip_const_ascii_whitespace(const char* s, const char* end) {
     if (s == NULL) return NULL;
 
     while (s < end && isspace((unsigned char)*s)) s++;
@@ -133,7 +132,8 @@ static bool parse_content_length_value(const char* value, size_t* out) {
     if (value == NULL || out == NULL || *value == '\0') return false;
 
     size_t result = 0;
-    for (const unsigned char* p = (const unsigned char*)value; *p != '\0'; p++) {
+    for (const unsigned char* p = (const unsigned char*)value; *p != '\0';
+         p++) {
         if (!isdigit(*p)) return false;
         if (result > (SIZE_MAX - (size_t)(*p - '0')) / 10) return false;
         result = (result * 10) + (size_t)(*p - '0');
@@ -321,6 +321,7 @@ static http_response response_default(void) {
     http_response res;
     memset(&res, 0, sizeof(res));
     res.status_code = "200";
+    set_response_header(&res, "Server", SERVER_VERSION);
     return res;
 }
 
@@ -332,16 +333,13 @@ static const char* validated_response_status_code(const http_response* res) {
     return status_code;
 }
 
-void log_response(TCPConn* conn, const http_request* req, const http_response* res) {
+void log_response(TCPConn* conn, const http_request* req,
+                  const http_response* res) {
     const char* ip = tcp_conn_ip(conn);
     const char* status_code = validated_response_status_code(res);
 
-    printf("%s \"%s %s\" %s %zu\n",
-           ip ? ip : "-",
-           req->method,
-           req->route,
-           status_code,
-           res->content_length);
+    printf("%s \"%s %s\" %s %zu\n", ip ? ip : "-", req->method, req->route,
+           status_code, res->content_length);
 }
 
 static void response_set_static(http_response* res, const char* status_code,
@@ -355,7 +353,8 @@ static void response_set_static(http_response* res, const char* status_code,
 
 static const char* reason_phrase(const char* status_code) {
     uint16_t code = 0;
-    if (!parse_http_status_code(status_code, &code)) return "Internal Server Error";
+    if (!parse_http_status_code(status_code, &code))
+        return "Internal Server Error";
 
     switch (code) {
         case 100:
@@ -652,8 +651,7 @@ static bool response_must_not_have_body(const http_request* req,
     if (request_is_head(req)) return true;
     if (status_code[0] == '1') return true;
 
-    return strcmp(status_code, "204") == 0 ||
-           strcmp(status_code, "304") == 0;
+    return strcmp(status_code, "204") == 0 || strcmp(status_code, "304") == 0;
 }
 
 static bool write_continue_response(TCPConn* c) {
@@ -714,8 +712,8 @@ static bool build_allow_header_value(const struct Route* route, char* buffer,
                                      size_t buffer_size) {
     if (route == NULL || buffer == NULL || buffer_size == 0) return false;
 
-    static const enum Method allow_order[] = {GET, HEAD, POST, PUT, DELETE,
-                                              PATCH};
+    static const enum Method allow_order[] = {GET, HEAD,   POST,
+                                              PUT, DELETE, PATCH};
 
     size_t off = 0;
     buffer[0] = '\0';
@@ -753,7 +751,8 @@ static bool response_should_close(const http_request* req,
     header* connection = get_response_header((http_response*)res, "Connection");
     if (connection != NULL && connection->value != NULL) {
         if (header_value_has_token(connection->value, "close")) return true;
-        if (header_value_has_token(connection->value, "keep-alive")) return false;
+        if (header_value_has_token(connection->value, "keep-alive"))
+            return false;
     }
 
     return !request_should_keep_alive(req);
@@ -876,7 +875,6 @@ bool set_response_status(http_response* res, const char* status) {
     return true;
 }
 
-
 static bool write_response(TCPConn* c, const http_request* req,
                            const http_response* res) {
     char line[1024];
@@ -887,8 +885,8 @@ static bool write_response(TCPConn* c, const http_request* req,
     bool close = response_should_close(req, res);
     bool omit_body = response_must_not_have_body(req, res);
 
-    int len = snprintf(line, sizeof(line), "%s %s %s\r\n", version,
-                       status_code, reason);
+    int len = snprintf(line, sizeof(line), "%s %s %s\r\n", version, status_code,
+                       reason);
     if (len < 0 || (size_t)len >= sizeof(line)) return false;
     if (!tcp_conn_write(c, line, (size_t)len)) return false;
 
@@ -1071,7 +1069,8 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
 
         if (!request_has_supported_version(req)) {
             http_response unsupported = response_default();
-            response_set_static(&unsupported, "505", "HTTP Version Not Supported");
+            response_set_static(&unsupported, "505",
+                                "HTTP Version Not Supported");
             (void)set_response_header(&unsupported, "Connection", "close");
             (void)write_response(c, req, &unsupported);
             log_response(c, req, &unsupported);
@@ -1200,7 +1199,3 @@ void server_destroy(ExpressServer* server) {
     tcp_server_destroy(server->tcp_server);
     free(server);
 }
-
-
-
-

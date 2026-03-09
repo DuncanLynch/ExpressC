@@ -1,7 +1,10 @@
 #pragma once
-#include <stdint.h>
-#include <types.h>
 #include <stdbool.h>
+#include <stdint.h>
+
+#include "types.h"
+
+#define SERVER_VERSION "ExpressC/1.0"
 
 enum Method {
     GET = 0,
@@ -48,6 +51,8 @@ size_t get_request_body_len(http_request* req);
 char* get_request_content_type(http_request* req);
 
 header* get_response_header(http_response* res, const char* key);
-bool set_response_header(http_response* res, const char* key, const char* value);
-bool set_response_body(http_response* res, const byte* body, const size_t body_len);
+bool set_response_header(http_response* res, const char* key,
+                         const char* value);
+bool set_response_body(http_response* res, const byte* body,
+                       const size_t body_len);
 bool set_response_status(http_response* res, const char* status);
