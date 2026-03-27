@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,6 +128,8 @@ static void accept_loop(TCPServer* s) {
             perror("accept4");
             break;
         }
+        int one = 1;
+        setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
         TCPConn* c = conn_create(cfd);
         if (!c) {
@@ -143,8 +146,9 @@ static void accept_loop(TCPServer* s) {
 
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &in_addr.sin_addr, ip, sizeof(ip));
-        //fprintf(stderr, "accepted %s:%u (fd=%d)\n", ip, ntohs(in_addr.sin_port),
-        //        cfd);
+        // fprintf(stderr, "accepted %s:%u (fd=%d)\n", ip,
+        // ntohs(in_addr.sin_port),
+        //         cfd);
         snprintf(c->ip, sizeof(c->ip), "%s", ip);
         c->port = ntohs(in_addr.sin_port);
         c->server = s;
@@ -180,11 +184,14 @@ static bool handle_read(int epfd, TCPConn* c, TCPServer* s) {
     for (;;) {
         ssize_t n = recv(c->fd, buf, sizeof(buf), 0);
 
-        if (n > 0) {
-            if (s->on_bytes) {
-                s->on_bytes(s->ctx, c, buf, (size_t)n);
+        if (s->on_bytes) {
+            s->on_bytes(s->ctx, c, buf, (size_t)n);
+
+            if (c->out_len > c->out_off) {
+                if (!flush_out(epfd, c)) {
+                    return false;
+                }
             }
-            continue;
         }
 
         if (n == 0) {
@@ -199,12 +206,6 @@ static bool handle_read(int epfd, TCPConn* c, TCPServer* s) {
         }
 
         return false;
-    }
-
-    if (c->out_len > c->out_off) {
-        if (!flush_out(epfd, c)) {
-            return false;
-        }
     }
 
     return true;
@@ -326,7 +327,7 @@ static bool resize_conn_cap(TCPConn* c, size_t need) {
     }
 
     void* p = realloc(c->out, new_cap);
-    if (!p) return false; 
+    if (!p) return false;
 
     c->out = (byte*)p;
     c->out_cap = new_cap;
