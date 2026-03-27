@@ -877,7 +877,8 @@ bool set_response_status(http_response* res, const char* status) {
 
 static bool write_response(TCPConn* c, const http_request* req,
                            const http_response* res) {
-    char line[1024];
+    char headers[8192];
+    size_t header_offset = 0;
     const char* status_code = validated_response_status_code(res);
     const char* reason = reason_phrase(status_code);
     const char* version = response_http_version(req);
@@ -885,16 +886,20 @@ static bool write_response(TCPConn* c, const http_request* req,
     bool close = response_should_close(req, res);
     bool omit_body = response_must_not_have_body(req, res);
 
-    int len = snprintf(line, sizeof(line), "%s %s %s\r\n", version, status_code,
-                       reason);
-    if (len < 0 || (size_t)len >= sizeof(line)) return false;
-    if (!tcp_conn_write(c, line, (size_t)len)) return false;
+    int written =
+        snprintf(headers + header_offset, sizeof(headers) - header_offset,
+                 "%s %s %s\r\n", version, status_code, reason);
+    if (written < 0 || (size_t)written >= sizeof(headers) - header_offset)
+        return false;
+    header_offset += (size_t)written;
 
     if (!response_has_header(res, "Content-Length")) {
-        len = snprintf(line, sizeof(line), "Content-Length: %zu\r\n",
-                       content_length);
-        if (len < 0 || (size_t)len >= sizeof(line)) return false;
-        if (!tcp_conn_write(c, line, (size_t)len)) return false;
+        written =
+            snprintf(headers + header_offset, sizeof(headers) - header_offset,
+                     "Content-Length: %zu\r\n", content_length);
+        if (written < 0 || (size_t)written >= sizeof(headers) - header_offset)
+            return false;
+        header_offset += (size_t)written;
     }
 
     if (!response_has_header(res, "Connection")) {
@@ -906,10 +911,13 @@ static bool write_response(TCPConn* c, const http_request* req,
         }
 
         if (connection_value != NULL) {
-            len = snprintf(line, sizeof(line), "Connection: %s\r\n",
-                           connection_value);
-            if (len < 0 || (size_t)len >= sizeof(line)) return false;
-            if (!tcp_conn_write(c, line, (size_t)len)) return false;
+            written = snprintf(headers + header_offset,
+                               sizeof(headers) - header_offset,
+                               "Connection: %s\r\n", connection_value);
+            if (written < 0 ||
+                (size_t)written >= sizeof(headers) - header_offset)
+                return false;
+            header_offset += (size_t)written;
         }
     }
 
@@ -919,13 +927,23 @@ static bool write_response(TCPConn* c, const http_request* req,
             const char* value = res->headers[i].value;
             if (key == NULL || value == NULL) continue;
 
-            len = snprintf(line, sizeof(line), "%s: %s\r\n", key, value);
-            if (len < 0 || (size_t)len >= sizeof(line)) return false;
-            if (!tcp_conn_write(c, line, (size_t)len)) return false;
+            written = snprintf(headers + header_offset,
+                               sizeof(headers) - header_offset, "%s: %s\r\n",
+                               key, value);
+            if (written < 0 ||
+                (size_t)written >= sizeof(headers) - header_offset)
+                return false;
+            header_offset += (size_t)written;
         }
     }
 
-    if (!tcp_conn_write_str(c, "\r\n")) return false;
+    written = snprintf(headers + header_offset, sizeof(headers) - header_offset,
+                       "\r\n");
+    if (written < 0 || (size_t)written >= sizeof(headers) - header_offset)
+        return false;
+    header_offset += (size_t)written;
+
+    if (!tcp_conn_write(c, (const byte*)headers, header_offset)) return false;
 
     if (!omit_body && res != NULL && res->body != NULL &&
         res->content_length > 0) {
@@ -1057,7 +1075,7 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
                 response_set_static(&bad, "400", "Bad Request");
                 (void)set_response_header(&bad, "Connection", "close");
                 (void)write_response(c, req, &bad);
-                log_response(c, req, &bad);
+                // log_response(c, req, &bad);
                 response_cleanup(&bad);
                 http_conn_reset(conn);
                 return;
@@ -1073,7 +1091,7 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
                                 "HTTP Version Not Supported");
             (void)set_response_header(&unsupported, "Connection", "close");
             (void)write_response(c, req, &unsupported);
-            log_response(c, req, &unsupported);
+            // log_response(c, req, &unsupported);
             response_cleanup(&unsupported);
             http_conn_reset(conn);
             return;
@@ -1084,7 +1102,7 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
             response_set_static(&failed, "417", "Expectation Failed");
             (void)set_response_header(&failed, "Connection", "close");
             (void)write_response(c, req, &failed);
-            log_response(c, req, &failed);
+            // log_response(c, req, &failed);
             response_cleanup(&failed);
             http_conn_reset(conn);
             return;
@@ -1149,7 +1167,7 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
             return;
         }
 
-        log_response(c, req, &res);
+        // log_response(c, req, &res);
 
         size_t consumed = conn->bytes_off + req->content_length;
         response_cleanup(&res);
