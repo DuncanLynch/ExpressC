@@ -1,6 +1,6 @@
 # ExpressC
 
-ExpressC is a lightweight HTTP server / routing library written in C, inspired by the simplicity of frameworks like Express.js.
+ExpressC is a lightweight HTTP server / routing framework written in C, inspired by the simplicity of frameworks like Express.js.
 
 The goal of the project is to make it easier to build small web servers in C without having to manually handle every low-level detail for routing and request/response handling.
 
@@ -26,7 +26,7 @@ This project is still in progress, but the long-term idea is to provide a minima
 ### Requirements
 
 - a C compiler such as `gcc` (which was used to test this project)
-- POSIX-compatible environment recommended (Linux/macOS)
+- Linux, as EPOLL is the only multiplexer supporting at the moment
 
 ### Build
 
