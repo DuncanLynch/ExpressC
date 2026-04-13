@@ -586,6 +586,8 @@ static int32_t parse_headers(const struct HTTPConn* c, http_request* req) {
             size_t content_length = 0;
             if (!parse_content_length_value(value, &content_length)) return -5;
             req->content_length = content_length;
+        } else if (caseless_stricmp(key, "Transfer-Encoding") == 0 && caseless_stricmp(value, "chunked") == 0) {
+            req->chunked = true;
         }
 
         line = line_end + 2;
@@ -1100,6 +1102,17 @@ void on_bytes(void* ctx, TCPConn* c, const byte* bytes, size_t len) {
         if (!request_expectation_supported(req)) {
             http_response failed = response_default();
             response_set_static(&failed, "417", "Expectation Failed");
+            (void)set_response_header(&failed, "Connection", "close");
+            (void)write_response(c, req, &failed);
+            // log_response(c, req, &failed);
+            response_cleanup(&failed);
+            http_conn_reset(conn);
+            return;
+        }
+
+        if (req->chunked) {
+            http_response failed = response_default();
+            response_set_static(&failed, "411", "Length Required");
             (void)set_response_header(&failed, "Connection", "close");
             (void)write_response(c, req, &failed);
             // log_response(c, req, &failed);

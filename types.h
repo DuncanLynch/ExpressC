@@ -32,6 +32,7 @@ typedef struct http_request {
     size_t content_length;
     char* content_type;
     byte* body;
+    bool chunked;
 } http_request;
 
 typedef struct http_response {
