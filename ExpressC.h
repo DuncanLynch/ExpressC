@@ -22,6 +22,7 @@ typedef struct ExpressRouter ExpressRouter;
 typedef struct ExpressConfig {
     void* ctx;
     uint16_t port;
+    char* static_dir[128];
 } ExpressConfig;
 
 typedef struct http_request http_request;

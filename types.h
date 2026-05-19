@@ -42,3 +42,10 @@ typedef struct http_response {
     byte* body;
     char* status_code;
 } http_response;
+
+
+inline size_t KiB() { return 1024; }
+
+inline size_t MiB() { return 1024 * KiB(); }
+
+inline size_t GiB() { return 1024 * MiB(); }
