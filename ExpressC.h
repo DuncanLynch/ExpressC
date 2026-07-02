@@ -2,9 +2,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "http_errors.h"
 #include "types.h"
 
-#define SERVER_VERSION "ExpressC/1.0"
+#define SERVER_VERSION "ExpressC/1.1"
 
 enum Method {
     GET = 0,
@@ -22,6 +23,7 @@ typedef struct ExpressRouter ExpressRouter;
 typedef struct ExpressConfig {
     void* ctx;
     uint16_t port;
+    size_t max_body_size;
 } ExpressConfig;
 
 typedef struct http_request http_request;
@@ -56,3 +58,6 @@ bool set_response_header(http_response* res, const char* key,
 bool set_response_body(http_response* res, const byte* body,
                        const size_t body_len);
 bool set_response_status(http_response* res, const char* status);
+
+char* get_cookie(http_request* req, char* key);
+bool set_response_cookie(http_response* res, const char* name, const char* value);

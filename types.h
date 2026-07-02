@@ -5,6 +5,7 @@
 
 #define MAX_HEADERS 128
 #define MAX_PARAMS 128
+#define MAX_COOKIES 64
 
 typedef uint8_t byte;
 
@@ -18,6 +19,11 @@ typedef struct header {
     char* value;
 } header;
 
+typedef struct cookie {
+    char* name;
+    char* value;
+} cookie;
+
 typedef struct http_request {
     char route[1024];
     char method[16];
@@ -28,6 +34,8 @@ typedef struct http_request {
     size_t route_params_len;
     header headers[MAX_HEADERS];
     size_t headers_len;
+    cookie cookies[MAX_COOKIES];
+    size_t cookie_len;
     char* host;
     size_t content_length;
     char* content_type;
@@ -38,6 +46,9 @@ typedef struct http_request {
 typedef struct http_response {
     header* headers;
     size_t headers_len;
+    size_t headers_cap;
+    cookie cookies[MAX_COOKIES];
+    size_t cookies_len;
     size_t content_length;
     byte* body;
     char* status_code;

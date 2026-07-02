@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/uio.h>
 
 // macros
 #define LISTEN_BACKLOG 512
@@ -35,6 +36,7 @@ void tcp_server_destroy(TCPServer* s);
 
 bool tcp_conn_write(TCPConn* c, const void* data, size_t len);
 bool tcp_conn_write_str(TCPConn* c, const char* s);
+bool tcp_conn_writev(TCPConn* c, const struct iovec* iov, int iovcnt);
 
 void tcp_conn_close_after_write(TCPConn* c);
 void tcp_conn_close_now(TCPConn* c);
