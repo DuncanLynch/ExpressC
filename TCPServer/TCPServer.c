@@ -13,6 +13,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 struct TCPConn {
@@ -387,6 +388,47 @@ bool tcp_conn_write(TCPConn* c, const void* data, size_t len) {
 bool tcp_conn_write_str(TCPConn* c, const char* s) {
     if (!s) return false;
     return tcp_conn_write(c, s, strlen(s));
+}
+
+bool tcp_conn_writev(TCPConn* c, const struct iovec* iov, int iovcnt) {
+    if (!c || c->close_now || !iov || iovcnt <= 0) return false;
+
+    size_t total = 0;
+    for (int i = 0; i < iovcnt; i++) total += iov[i].iov_len;
+    if (total == 0) return true;
+
+    if (c->out_len == c->out_off) {
+        c->out_len = c->out_off = 0;
+        ssize_t n = writev(c->fd, iov, iovcnt);
+        if (n == (ssize_t)total) return true;
+        if (n < 0) {
+            if (!(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+                return false;
+            n = 0;
+        }
+        size_t rem = total - (size_t)n;
+        if (rem > c->out_cap) (void)resize_conn_cap(c, rem);
+        size_t skip = (size_t)n, off = 0;
+        for (int i = 0; i < iovcnt; i++) {
+            const uint8_t* base = iov[i].iov_base;
+            size_t len = iov[i].iov_len;
+            if (skip >= len) { skip -= len; continue; }
+            memcpy(c->out + off, base + skip, len - skip);
+            off += len - skip;
+            skip = 0;
+        }
+        c->out_len = rem;
+        c->out_off = 0;
+        uint32_t ev = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
+        (void)mod_epoll(c->server->epfd, c->fd, ev, c);
+        return true;
+    }
+
+    for (int i = 0; i < iovcnt; i++) {
+        if (iov[i].iov_len && !tcp_conn_write(c, iov[i].iov_base, iov[i].iov_len))
+            return false;
+    }
+    return true;
 }
 
 void tcp_conn_close_after_write(TCPConn* c) {
