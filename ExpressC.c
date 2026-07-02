@@ -697,6 +697,8 @@ static int32_t parse_headers(const struct HTTPConn *c, http_request *req) {
       if (!parse_content_length_value(value, &content_length))
         return PARSE_HEADERS_ERR_CONTENT_LENGTH;
       req->content_length = content_length;
+    } else if (caseless_stricmp(key, "Transfer-Encoding") == 0 && caseless_stricmp(value, "chunked") == 0) {
+         req->chunked = true;
     } else if (caseless_stricmp(key, "Cookie") == 0) {
       const char *cursor = value;
 
@@ -1405,15 +1407,26 @@ static void on_bytes(void *ctx, TCPConn *c, const byte *bytes, size_t len) {
       return;
     }
 
-    size_t body_bytes = conn->bytes_len - conn->bytes_off;
-    if (!conn->sent_continue && request_expects_continue(req) &&
-        req->content_length > body_bytes) {
-      if (!write_continue_response(c)) {
-        tcp_conn_close_now(c);
-        return;
-      }
-      conn->sent_continue = true;
-    }
+        if (req->chunked) {
+            http_response failed = response_default();
+            response_set_static(&failed, "411", "Length Required");
+            (void)set_response_header(&failed, "Connection", "close");
+            (void)write_response(c, req, &failed);
+            // log_response(c, req, &failed);
+            response_cleanup(&failed);
+            http_conn_reset(conn);
+            return;
+        }
+
+        size_t body_bytes = conn->bytes_len - conn->bytes_off;
+        if (!conn->sent_continue && request_expects_continue(req) &&
+            req->content_length > body_bytes) {
+            if (!write_continue_response(c)) {
+                tcp_conn_close_now(c);
+                return;
+            }
+            conn->sent_continue = true;
+        }
 
     if (req->content_length > body_bytes)
       return;
