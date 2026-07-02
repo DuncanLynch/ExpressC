@@ -527,6 +527,7 @@ static bool parse_request_line(http_request* req, const char* request_line) {
     return cursor == line_end;
 }
 
+// TODO: moving cookie storing to here
 static int32_t parse_headers(const struct HTTPConn* c, http_request* req) {
     if (c == NULL || req == NULL || c->bytes == NULL) return -3;
 
@@ -586,15 +587,37 @@ static int32_t parse_headers(const struct HTTPConn* c, http_request* req) {
             size_t content_length = 0;
             if (!parse_content_length_value(value, &content_length)) return -5;
             req->content_length = content_length;
-        }
+        } else if (caseless_stricmp(key, "Cookie") == 0) {
+            const char* cursor = value;
 
-        line = line_end + 2;
+            while (*cursor != '\0') {
+                const char* delimiter = strstr(cursor, "=");
+                if (delimiter == NULL) return NULL;
+
+                size_t key_len = (size_t)(delimiter - cursor);
+                if (key_len >= 1024) return NULL;
+
+                char lhs[1024];
+                strncpy(lhs, cursor, key_len);
+                lhs[key_len] = '\0';
+
+                const char* semicolon = strstr(delimiter, ";");
+                const char* value_start = delimiter + 1;
+                const char* value_end =
+                    semicolon != NULL ? semicolon : value + strlen(value);
+                size_t value_len = (size_t)(value_end - value_start);
+
+                if (semicolon == NULL) break;
+                cursor = semicolon + 1;
+            }
+        }
     }
 
     if (strcmp(req->version, "HTTP/1.1") == 0 && host_count != 1) return -3;
 
     return (int32_t)header_bytes;
 }
+
 static bool response_has_header(const http_response* res, const char* key) {
     if (res == NULL || key == NULL) return false;
 
@@ -804,6 +827,65 @@ header* get_request_header(http_request* req, const char* key) {
 
     return NULL;
 }
+
+// TODO: refactor this to work through the parser, add a
+// 'cookie' field in http_request and http_response
+char* search_for_cookie_in_value(const char* value, const char* cookie) {
+    if (value == NULL || cookie == NULL) return NULL;
+
+    const char* cursor = value;
+
+    while (*cursor != '\0') {
+        const char* delimiter = strstr(cursor, "=");
+        if (delimiter == NULL) return NULL;
+
+        size_t key_len = (size_t)(delimiter - cursor);
+        if (key_len >= 1024) return NULL;
+
+        char lhs[1024];
+        strncpy(lhs, cursor, key_len);
+        lhs[key_len] = '\0';
+
+        const char* semicolon = strstr(delimiter, ";");
+        const char* value_start = delimiter + 1;
+        const char* value_end =
+            semicolon != NULL ? semicolon : value + strlen(value);
+        size_t value_len = (size_t)(value_end - value_start);
+
+        if (caseless_stricmp(lhs, cookie) == 0) {
+            char* ret = malloc(value_len + 1);
+            if (ret == NULL) return NULL;
+            strncpy(ret, value_start, value_len);
+            ret[value_len] = '\0';
+            return ret;
+        }
+
+        if (semicolon == NULL) return NULL;
+        cursor = semicolon + 1;
+    }
+
+    return NULL;
+}
+
+// returns a dynamically allocated value cookie name can only be max 1KiB.
+// youd be an idiot to have a cookie name longer lmaoaoaoaoao
+char* get_cookie_copy(http_request* req, const char* cookie) {
+    if (req == NULL || cookie == NULL) return NULL;
+
+    for (size_t i = 0; i < req->headers_len; i++) {
+        if (req->headers[i].key == NULL) continue;
+        if (caseless_stricmp(req->headers[i].key, "Cookie") == 0) {
+            char* ret =
+                search_for_cookie_in_value(req->headers[i].value, cookie);
+            if (ret != NULL) return ret;
+        }
+    }
+    return NULL;
+}
+
+void destroy_cookie_copy(char* cookie) { free(cookie); }
+
+void set_response_cookie() {}
 
 byte* get_request_body(http_request* req) {
     if (req == NULL) return NULL;

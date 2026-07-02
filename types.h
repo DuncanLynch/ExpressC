@@ -18,6 +18,11 @@ typedef struct header {
     char* value;
 } header;
 
+typedef struct cookie {
+    char* name;
+    char* value;
+} cookie;
+
 typedef struct http_request {
     char route[1024];
     char method[16];
@@ -28,6 +33,8 @@ typedef struct http_request {
     size_t route_params_len;
     header headers[MAX_HEADERS];
     size_t headers_len;
+    cookie cookies[MAX_HEADERS];
+    size_t cookie_len;
     char* host;
     size_t content_length;
     char* content_type;

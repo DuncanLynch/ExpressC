@@ -56,3 +56,5 @@ bool set_response_header(http_response* res, const char* key,
 bool set_response_body(http_response* res, const byte* body,
                        const size_t body_len);
 bool set_response_status(http_response* res, const char* status);
+
+char* get_cookie(http_request* req, char* key);
