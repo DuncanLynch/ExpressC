@@ -5,15 +5,15 @@
 #include "http_errors.h"
 #include "types.h"
 
-#define SERVER_VERSION "ExpressC/1.1"
+#define SERVER_VERSION "ExpressC/1.5"
 
 enum Method {
-    GET = 0,
-    POST = 1,
-    DELETE = 2,
-    PUT = 3,
-    PATCH = 4,
-    HEAD = 5,
+  GET = 0,
+  POST = 1,
+  DELETE = 2,
+  PUT = 3,
+  PATCH = 4,
+  HEAD = 5,
 };
 
 typedef struct ExpressServer ExpressServer;
@@ -21,43 +21,49 @@ typedef struct ExpressServer ExpressServer;
 typedef struct ExpressRouter ExpressRouter;
 
 typedef struct ExpressConfig {
-    void* ctx;
-    uint16_t port;
-    size_t max_body_size;
+  void *ctx;
+  uint16_t port;
+  size_t max_body_size;
+  const char *public_path;
 } ExpressConfig;
 
 typedef struct http_request http_request;
 
 typedef struct http_response http_response;
 
-typedef void (*route_handler)(void* ctx, http_request* req, http_response* res);
+typedef void (*route_handler)(void *ctx, http_request *req, http_response *res);
 
-typedef void (*middleware_handler)(void* ctx, http_request* req,
-                                   http_response* res);
+typedef void (*middleware_handler)(void *ctx, http_request *req,
+                                   http_response *res);
 
-ExpressRouter* router_new();
-int32_t router_add(ExpressRouter* r, char* route, enum Method method,
+ExpressRouter *router_new();
+int32_t router_add(ExpressRouter *r, char *route, enum Method method,
                    route_handler routing_func);
-int32_t router_add_middleware(ExpressRouter* r, middleware_handler mware_func);
-void router_destroy(ExpressRouter* r);
+int32_t router_add_middleware(ExpressRouter *r, middleware_handler mware_func);
+int32_t router_set_fallback(ExpressRouter *r, route_handler handler);
+void router_destroy(ExpressRouter *r);
 
-ExpressServer* server_new(ExpressConfig* cnfg, ExpressRouter* router);
-void server_run(ExpressServer* server);
-void server_destroy(ExpressServer* server);
+ExpressServer *server_new(ExpressConfig *cnfg, ExpressRouter *router);
+void server_run(ExpressServer *server);
+void server_destroy(ExpressServer *server);
+size_t server_static_file_count(ExpressServer *server);
 
-param* get_request_param(http_request* req, const char* key);
-param* get_request_route_param(http_request* req, const char* key);
-header* get_request_header(http_request* req, const char* key);
-byte* get_request_body(http_request* req);
-size_t get_request_body_len(http_request* req);
-char* get_request_content_type(http_request* req);
+param *get_request_param(http_request *req, const char *key);
+param *get_request_route_param(http_request *req, const char *key);
+header *get_request_header(http_request *req, const char *key);
+byte *get_request_body(http_request *req);
+size_t get_request_body_len(http_request *req);
+char *get_request_content_type(http_request *req);
 
-header* get_response_header(http_response* res, const char* key);
-bool set_response_header(http_response* res, const char* key,
-                         const char* value);
-bool set_response_body(http_response* res, const byte* body,
+header *get_response_header(http_response *res, const char *key);
+bool set_response_header(http_response *res, const char *key,
+                         const char *value);
+bool set_response_body(http_response *res, const byte *body,
                        const size_t body_len);
-bool set_response_status(http_response* res, const char* status);
+bool set_response_status(http_response *res, const char *status);
+bool set_response_redirect(http_response *res, const char *location,
+                           const char *status);
 
-char* get_cookie(http_request* req, char* key);
-bool set_response_cookie(http_response* res, const char* name, const char* value);
+char *get_cookie(http_request *req, char *key);
+bool set_response_cookie(http_response *res, const char *name,
+                         const char *value);

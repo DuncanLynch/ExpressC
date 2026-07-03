@@ -1,9 +1,12 @@
 #include "ExpressC.h"
 
 #include <ctype.h>
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 
 #include "TCPServer/TCPServer.h"
@@ -11,6 +14,17 @@
 
 #define MAX_METHODS 6
 #define MAX_ROUTES 512
+#define STATIC_MAP_CAP 4096
+
+typedef struct {
+  char*  key;
+  size_t size;
+} StaticEntry;
+
+typedef struct {
+  StaticEntry slots[STATIC_MAP_CAP];
+  size_t count;
+} StaticMap;
 
 struct HTTPConn {
   byte *bytes;
@@ -36,6 +50,7 @@ typedef struct ExpressRouter {
   struct Route routes[MAX_ROUTES];
   size_t routes_off;
   middleware_handler mware_func;
+  route_handler fallback;
 } ExpressRouter;
 
 typedef struct ExpressServer {
@@ -46,6 +61,8 @@ typedef struct ExpressServer {
   size_t total_requests;
   size_t max_body_size;
 
+  char* public_path;
+  StaticMap static_map;
 } ExpressServer;
 
 static int caseless_stricmp(const char *lhs, const char *rhs) {
@@ -62,6 +79,146 @@ static int caseless_stricmp(const char *lhs, const char *rhs) {
   }
 
   return tolower((unsigned char)*lhs) - tolower((unsigned char)*rhs);
+}
+
+static uint32_t fnv1a(const char* s) {
+  uint32_t h = 2166136261u;
+  for (; *s; s++) {
+    h ^= (unsigned char)*s;
+    h *= 16777619u;
+  }
+  return h;
+}
+
+static void static_map_insert(StaticMap* m, const char* key, size_t size) {
+  if (m->count >= STATIC_MAP_CAP / 2) return;
+  uint32_t h = fnv1a(key) & (STATIC_MAP_CAP - 1);
+  while (m->slots[h].key != NULL)
+    h = (h + 1) & (STATIC_MAP_CAP - 1);
+  m->slots[h].key = strdup(key);
+  m->slots[h].size = size;
+  m->count++;
+}
+
+static bool static_map_lookup(const StaticMap* m, const char* key,
+                               size_t* out_size) {
+  uint32_t h = fnv1a(key) & (STATIC_MAP_CAP - 1);
+  for (size_t i = 0; i < STATIC_MAP_CAP; i++) {
+    if (m->slots[h].key == NULL) return false;
+    if (strcmp(m->slots[h].key, key) == 0) {
+      if (out_size) *out_size = m->slots[h].size;
+      return true;
+    }
+    h = (h + 1) & (STATIC_MAP_CAP - 1);
+  }
+  return false;
+}
+
+static void static_map_destroy(StaticMap* m) {
+  for (size_t i = 0; i < STATIC_MAP_CAP; i++) {
+    free(m->slots[i].key);
+    m->slots[i].key = NULL;
+  }
+  m->count = 0;
+}
+
+static void scan_dir(StaticMap* m, const char* public_path, const char* rel) {
+  char full[PATH_MAX];
+  if (rel[0] == '\0')
+    snprintf(full, sizeof(full), "%s", public_path);
+  else
+    snprintf(full, sizeof(full), "%s/%s", public_path, rel);
+
+  DIR* d = opendir(full);
+  if (!d) return;
+
+  struct dirent* ent;
+  while ((ent = readdir(d)) != NULL) {
+    if (ent->d_name[0] == '.') continue;
+
+    char child_full[PATH_MAX * 2];
+    int child_full_len = snprintf(child_full, sizeof(child_full), "%s/%s", full, ent->d_name);
+    if (child_full_len < 0 || (size_t)child_full_len >= sizeof(child_full)) continue;
+
+    struct stat st;
+    if (stat(child_full, &st) != 0) continue;
+
+    if (S_ISDIR(st.st_mode)) {
+      char child_rel[PATH_MAX];
+      if (rel[0] == '\0')
+        snprintf(child_rel, sizeof(child_rel), "%s", ent->d_name);
+      else
+        snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, ent->d_name);
+      scan_dir(m, public_path, child_rel);
+    } else if (S_ISREG(st.st_mode)) {
+      char route[PATH_MAX];
+      if (rel[0] == '\0')
+        snprintf(route, sizeof(route), "/%s", ent->d_name);
+      else
+        snprintf(route, sizeof(route), "/%s/%s", rel, ent->d_name);
+      static_map_insert(m, route, (size_t)st.st_size);
+    }
+  }
+  closedir(d);
+}
+
+static const char* mime_type_for_path(const char* path) {
+  const char* dot = strrchr(path, '.');
+  if (!dot) return "application/octet-stream";
+  dot++;
+  if (strcmp(dot, "html") == 0 || strcmp(dot, "htm") == 0)
+    return "text/html; charset=utf-8";
+  if (strcmp(dot, "css") == 0)  return "text/css";
+  if (strcmp(dot, "js") == 0)   return "application/javascript";
+  if (strcmp(dot, "json") == 0) return "application/json";
+  if (strcmp(dot, "png") == 0)  return "image/png";
+  if (strcmp(dot, "jpg") == 0 || strcmp(dot, "jpeg") == 0) return "image/jpeg";
+  if (strcmp(dot, "ico") == 0)  return "image/x-icon";
+  if (strcmp(dot, "svg") == 0)  return "image/svg+xml";
+  if (strcmp(dot, "gif") == 0)  return "image/gif";
+  if (strcmp(dot, "webp") == 0) return "image/webp";
+  if (strcmp(dot, "txt") == 0)  return "text/plain; charset=utf-8";
+  return "application/octet-stream";
+}
+
+static bool try_serve_static_file(ExpressServer* s, http_request* req,
+                                   http_response* res, byte** out_buf) {
+  if (s->public_path == NULL) return false;
+
+  size_t file_size = 0;
+  char route[PATH_MAX];
+  snprintf(route, sizeof(route), "%s", req->route);
+
+  if (!static_map_lookup(&s->static_map, route, &file_size)) {
+    size_t rlen = strlen(route);
+    if (rlen > 0 && route[rlen - 1] == '/')
+      snprintf(route, sizeof(route), "%sindex.html", req->route);
+    else
+      snprintf(route, sizeof(route), "%s/index.html", req->route);
+    if (!static_map_lookup(&s->static_map, route, &file_size))
+      return false;
+  }
+
+  char fpath[PATH_MAX];
+  snprintf(fpath, sizeof(fpath), "%s%s", s->public_path, route);
+
+  FILE* f = fopen(fpath, "rb");
+  if (!f) return false;
+
+  byte* buf = malloc(file_size > 0 ? file_size : 1);
+  if (!buf) {
+    fclose(f);
+    return false;
+  }
+
+  size_t nread = fread(buf, 1, file_size, f);
+  fclose(f);
+
+  set_response_header(res, "Content-Type", mime_type_for_path(route));
+  res->body = buf;
+  res->content_length = nread;
+  *out_buf = buf;
+  return true;
 }
 
 static int from_hex_digit(char c) {
@@ -1010,24 +1167,6 @@ char *get_cookie(http_request *req, char *key) {
   return NULL;
 }
 
-static char *get_cookie_copy(http_request *req, const char *cookie) {
-  if (req == NULL || cookie == NULL)
-    return NULL;
-
-  for (size_t i = 0; i < req->cookie_len; i++) {
-    if (caseless_stricmp(req->cookies[i].name, cookie) == 0) {
-      size_t len = strlen(req->cookies[i].value);
-      char *ret = malloc(len + 1);
-      if (ret == NULL)
-        return NULL;
-      memcpy(ret, req->cookies[i].value, len + 1);
-      return ret;
-    }
-  }
-  return NULL;
-}
-
-static void destroy_cookie_copy(char *cookie) { free(cookie); }
 
 bool set_response_cookie(http_response *res, const char *name,
                          const char *value) {
@@ -1135,6 +1274,15 @@ bool set_response_status(http_response *res, const char *status) {
 
   res->status_code = (char *)status;
   return true;
+}
+
+bool set_response_redirect(http_response *res, const char *location,
+                           const char *status) {
+  if (res == NULL || location == NULL) return false;
+  if (status == NULL) status = "302";
+  if (!parse_http_status_code(status, NULL)) return false;
+  return set_response_status(res, status) &&
+         set_response_header(res, "Location", location);
 }
 
 static bool has_crlf(const char *s) {
@@ -1283,6 +1431,13 @@ int32_t router_add_middleware(ExpressRouter *r, middleware_handler mware_func) {
   if (r->mware_func != NULL)
     return -1;
   r->mware_func = mware_func;
+  return 0;
+}
+
+int32_t router_set_fallback(ExpressRouter *r, route_handler handler) {
+  if (r == NULL || handler == NULL) return -1;
+  if (r->fallback != NULL) return -1;
+  r->fallback = handler;
   return 0;
 }
 
@@ -1439,6 +1594,7 @@ static void on_bytes(void *ctx, TCPConn *c, const byte *bytes, size_t len) {
     enum Method handler_method = method;
     struct Route *r = find_route(s->router, req->route);
     route_handler handler = NULL;
+    byte* static_body = NULL;
 
     if (r != NULL && method < MAX_METHODS) {
       if (method == HEAD && r->handlers[HEAD].handler == NULL) {
@@ -1455,7 +1611,12 @@ static void on_bytes(void *ctx, TCPConn *c, const byte *bytes, size_t len) {
     }
 
     if (r == NULL) {
-      response_set_static(&res, "404", "Not Found");
+      if (!try_serve_static_file(s, req, &res, &static_body)) {
+        if (s->router->fallback != NULL)
+          s->router->fallback(s->user_ctx, req, &res);
+        else
+          response_set_static(&res, "404", "Not Found");
+      }
     } else if (method >= MAX_METHODS) {
       response_set_static(&res, "405", "Method Not Allowed");
     } else if (handler == NULL) {
@@ -1472,6 +1633,7 @@ static void on_bytes(void *ctx, TCPConn *c, const byte *bytes, size_t len) {
 
     bool close = response_should_close(req, &res);
     if (!write_response(c, req, &res)) {
+      free(static_body);
       response_cleanup(&res);
       tcp_conn_close_now(c);
       return;
@@ -1479,6 +1641,7 @@ static void on_bytes(void *ctx, TCPConn *c, const byte *bytes, size_t len) {
 
     // log_response(c, req, &res);
 
+    free(static_body);
     size_t consumed = conn->bytes_off + req->content_length;
     response_cleanup(&res);
     http_conn_clear_request(conn);
@@ -1504,6 +1667,14 @@ ExpressServer *server_new(ExpressConfig *cnfg, ExpressRouter *router) {
   server->router = router;
   server->max_body_size = cnfg->max_body_size ? cnfg->max_body_size : 1048576;
 
+  server->public_path = NULL;
+  memset(&server->static_map, 0, sizeof(server->static_map));
+  if (cnfg->public_path != NULL) {
+    server->public_path = strdup(cnfg->public_path);
+    if (server->public_path)
+      scan_dir(&server->static_map, server->public_path, "");
+  }
+
   TCPServerConfig tcp_cfg;
   memset(&tcp_cfg, 0, sizeof(tcp_cfg));
   tcp_cfg.port = cnfg->port;
@@ -1521,6 +1692,11 @@ ExpressServer *server_new(ExpressConfig *cnfg, ExpressRouter *router) {
   return server;
 }
 
+size_t server_static_file_count(ExpressServer *server) {
+  if (server == NULL) return 0;
+  return server->static_map.count;
+}
+
 void server_run(ExpressServer *server) {
   if (server == NULL || server->tcp_server == NULL)
     return;
@@ -1531,6 +1707,8 @@ void server_destroy(ExpressServer *server) {
   if (server == NULL)
     return;
 
+  static_map_destroy(&server->static_map);
+  free(server->public_path);
   tcp_server_destroy(server->tcp_server);
   free(server);
 }

@@ -1,0 +1,66 @@
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s, background 0.2s, backdrop-filter 0.2s;
+}
+
+.nav.scrolled {
+  background: rgba(10, 10, 10, 0.85);
+  backdrop-filter: blur(12px);
+  border-color: var(--border);
+}
+
+.logo {
+  font-weight: 700;
+  font-size: 1rem;
+  color: #fff;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+  margin-right: auto;
+}
+
+.links {
+  list-style: none;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.links a {
+  color: var(--muted);
+  font-size: 0.875rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  text-decoration: none;
+}
+
+.links a:hover {
+  color: var(--text);
+  background: var(--bg3);
+}
+
+.github {
+  font-size: 0.875rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.9rem;
+  border-radius: 6px;
+  transition: color 0.15s, border-color 0.15s;
+  text-decoration: none;
+}
+
+.github:hover {
+  color: var(--text);
+  border-color: #444;
+  text-decoration: none;
+}
+
+@media (max-width: 600px) {
+  .links { display: none; }
+}
