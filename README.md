@@ -39,11 +39,11 @@ gcc -o app main.c ExpressC.c TCPServer/TCPServer.c
 ### Next Steps
 
 * [ ] Chunked encoding support
-* [ ] Cookie Management functions.
+* [x] Cookie Management functions.
 * [ ] Improved Header and param parsing.
 * [ ] Colored logging messages in dev mode.
 * [ ] Configurable modes for dev/prod.
-* [ ] Error status codes.
+* [x] Error status codes.
 
 ### Future plans
 * [ ] Support for TLS
